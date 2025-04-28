@@ -4,12 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#define GRID_HEIGHT 50
-#define GRID_WIDTH 50
+#define GRID_HEIGHT 200
+#define GRID_WIDTH 200
 #define DX 0.1f
 #define DY 0.1f
 #define DT 0.01f
-#define VISCOSITY 0.001f
+#define VISCOSITY 0.01f
 #define GRAVITY -9.8f
 
 float p[GRID_HEIGHT][GRID_WIDTH];          // Pressure at cell centers
@@ -18,6 +18,9 @@ float v[GRID_HEIGHT + 1][GRID_WIDTH];      // Y-velocity at horizontal faces
 float u_prev[GRID_HEIGHT][GRID_WIDTH + 1]; // Previous u for diffusion
 float v_prev[GRID_HEIGHT + 1][GRID_WIDTH]; // Previous v for diffusion
 float divergence[GRID_HEIGHT][GRID_WIDTH]; // Divergence field
+
+// solid to move fluid around
+int solid[GRID_HEIGHT][GRID_WIDTH]; // 1 = solid, 0 = fluid
 
 // ===================================
 // SDL Window Configuration
@@ -70,7 +73,18 @@ void visualize() {
       int y2 = y1 + (int)(v_avg * 20);
 
       SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-      SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+      // SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+    }
+  }
+
+  // draw solid
+  SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255); // Gray
+  for (int i = 0; i < GRID_HEIGHT; i++) {
+    for (int j = 0; j < GRID_WIDTH; j++) {
+      if (solid[i][j]) {
+        SDL_Rect rect = {j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE};
+        SDL_RenderFillRect(renderer, &rect);
+      }
     }
   }
 
@@ -239,6 +253,19 @@ void enforce_Boundaries() {
     v[GRID_HEIGHT][i] = 0;
     v[0][i] = 0;
   }
+
+  // Enforce solid obstacles
+  for (int i = 0; i < GRID_HEIGHT; i++) {
+    for (int j = 0; j < GRID_WIDTH; j++) {
+      if (solid[i][j]) {
+        // Zero velocities around solid cells
+        u[i][j] = 0;
+        u[i][j + 1] = 0;
+        v[i][j] = 0;
+        v[i + 1][j] = 0;
+      }
+    }
+  }
 }
 
 void simulate_Step(float dt) {
@@ -269,6 +296,20 @@ void init_Sim() {
   memset(v, 0, sizeof(v));
   memset(p, 0, sizeof(p));
 
+  // Create solid circle in center
+  for (int i = 0; i < GRID_HEIGHT; i++) {
+    for (int j = 0; j < GRID_WIDTH; j++) {
+      float dx = j - GRID_WIDTH / 2;
+      float dy = i - GRID_HEIGHT / 2;
+      float dist = sqrtf(dx * dx + dy * dy);
+      if (dist < 10.0f) { // radius = 10 grid cells
+        solid[i][j] = 1;
+      } else {
+        solid[i][j] = 0;
+      }
+    }
+  }
+
   // Create a gentle circular vortex
   for (int i = 0; i < GRID_HEIGHT; i++) {
     for (int j = 0; j < GRID_WIDTH; j++) {
@@ -276,8 +317,8 @@ void init_Sim() {
       float dy = i - GRID_HEIGHT / 2;
       float dist = sqrtf(dx * dx + dy * dy);
       if (dist < 10.0f && dist > 0.1f) {
-        u[i][j] = -dy / dist * 0.5f;
-        v[i][j] = dx / dist * 0.5f;
+        u[i][j] = -dy / dist * 10.0f;
+        v[i][j] = dx / dist * 10.0f;
       }
     }
   }
@@ -316,6 +357,34 @@ int main() {
         quit = 1;
       }
     }
+
+    if (e.type == SDL_MOUSEBUTTONDOWN) {
+      int mouseX, mouseY;
+      SDL_GetMouseState(&mouseX, &mouseY);
+
+      int cellX = mouseX / CELL_SIZE;
+      int cellY = mouseY / CELL_SIZE;
+
+      for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+          int nx = cellX + dx;
+          int ny = cellY + dy;
+          if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+            float strength = 50.0f * (1.0f - 0.5f * (abs(dx) + abs(dy)));
+            u[ny][nx] += strength;
+            // v[ny][nx] += strength;
+          }
+        }
+      }
+    }
+
+    float avg_p = 0.0f;
+    for (int i = 0; i < GRID_HEIGHT; i++) {
+      for (int j = 0; j < GRID_WIDTH; j++) {
+        avg_p += p[i][j];
+      }
+    }
+    printf("Avg pressure: %f\n", avg_p / (GRID_HEIGHT * GRID_WIDTH));
 
     simulate_Step(DT);
     visualize();
