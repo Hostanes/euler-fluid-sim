@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-
 #define GRID_HEIGHT 50
 #define GRID_WIDTH 50
 #define DX 0.1f
@@ -36,53 +35,42 @@ void visualize() {
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
   SDL_RenderClear(renderer);
 
-  // Find max velocity for normalization
-  float max_vel = 0.001f;
+  // Find max pressure for normalization
+  float max_pressure = 0.001f;
   for (int i = 0; i < GRID_HEIGHT; i++) {
     for (int j = 0; j < GRID_WIDTH; j++) {
-      float u_avg = 0.5f * (u[i][j] + u[i][j + 1]);
-      float v_avg = 0.5f * (v[i][j] + v[i + 1][j]);
-      float vel_mag = sqrtf(u_avg * u_avg + v_avg * v_avg);
-      if (vel_mag > max_vel)
-        max_vel = vel_mag;
+      if (fabs(p[i][j]) > max_pressure)
+        max_pressure = fabs(p[i][j]);
     }
   }
 
-  // Draw fluid state
+  // Draw pressure field
   for (int i = 0; i < GRID_HEIGHT; i++) {
     for (int j = 0; j < GRID_WIDTH; j++) {
-      // Calculate cell center
-      int x = j * CELL_SIZE + CELL_SIZE / 2;
-      int y = i * CELL_SIZE + CELL_SIZE / 2;
+      // Normalize pressure to [0,1]
+      float normalized_p = fabs(p[i][j]) / max_pressure;
 
-      // Get averaged velocity
-      float u_avg = 0.5f * (u[i][j] + u[i][j + 1]);
-      float v_avg = 0.5f * (v[i][j] + v[i + 1][j]);
-
-      // Normalize and scale velocity for display
-      float vel_mag = sqrtf(u_avg * u_avg + v_avg * v_avg);
-      float normalized_vel = vel_mag / max_vel;
-      int arrow_length = (int)(normalized_vel * CELL_SIZE * 0.8f);
-
-      // Draw velocity direction (white)
-      SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-      if (vel_mag > 0.01f) { // Only draw if there's significant flow
-        int x2 = x + (int)(u_avg / vel_mag * arrow_length);
-        int y2 = y + (int)(v_avg / vel_mag * arrow_length);
-        SDL_RenderDrawLine(renderer, x, y, x2, y2);
-      }
-
-      // Draw pressure (blue/red)
-      float pressure = p[i][j];
-      if (pressure > 0) {
-        SDL_SetRenderDrawColor(renderer, 0, 0,
-                               (int)(255 * fminf(1.0f, pressure)), 100);
+      // Color mapping: blue for positive, red for negative pressure
+      if (p[i][j] > 0) {
+        SDL_SetRenderDrawColor(renderer, 0, 0, (int)(255 * normalized_p), 255);
       } else {
-        SDL_SetRenderDrawColor(renderer, (int)(255 * fminf(1.0f, -pressure)), 0,
-                               0, 100);
+        SDL_SetRenderDrawColor(renderer, (int)(255 * normalized_p), 0, 0, 255);
       }
+
+      // Draw cell
       SDL_Rect rect = {j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE};
       SDL_RenderFillRect(renderer, &rect);
+
+      // Draw velocity vectors (white)
+      float u_avg = 0.5f * (u[i][j] + u[i][j + 1]);
+      float v_avg = 0.5f * (v[i][j] + v[i + 1][j]);
+      int x1 = j * CELL_SIZE + CELL_SIZE / 2;
+      int y1 = i * CELL_SIZE + CELL_SIZE / 2;
+      int x2 = x1 + (int)(u_avg * 20); // Scale factor for visibility
+      int y2 = y1 + (int)(v_avg * 20);
+
+      SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+      SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
     }
   }
 
@@ -177,6 +165,7 @@ void advect_Velocity(float dt) {
 /*
   Project pressure, fluid is treated as incompressible
   ▽ . u = 0
+  MODIFIED for numerical stability
 
   1. Calculate Divergence:
     sum of inflows to cell (inflow for x is the difference of both x edges for
@@ -187,36 +176,52 @@ void advect_Velocity(float dt) {
 
 */
 void project_Pressure(float dt) {
-
   // Compute divergence
+  float total_divergence = 0.0f;
   for (int i = 0; i < GRID_HEIGHT; i++) {
     for (int j = 0; j < GRID_WIDTH; j++) {
       divergence[i][j] =
           (u[i][j + 1] - u[i][j]) / DX + (v[i + 1][j] - v[i][j]) / DY;
+      total_divergence += fabs(divergence[i][j]);
     }
   }
 
-  // Solve pressure (simplified Jacobi iteration)
+  // Normalize divergence to prevent explosion
+  float divergence_scale =
+      total_divergence > 0 ? 1.0f / (total_divergence + 1e-6f) : 0;
+
+  // Solve pressure with improved boundary handling
   memset(p, 0, sizeof(p));
-  for (int iter = 0; iter < 50; iter++) {
+  for (int iter = 0; iter < 100; iter++) {
     for (int i = 1; i < GRID_HEIGHT - 1; i++) {
       for (int j = 1; j < GRID_WIDTH - 1; j++) {
-        p[i][j] = (divergence[i][j] + p[i - 1][j] + p[i + 1][j] + p[i][j - 1] +
-                   p[i][j + 1]) /
-                  4;
+        p[i][j] = (divergence[i][j] * divergence_scale + p[i - 1][j] +
+                   p[i + 1][j] + p[i][j - 1] + p[i][j + 1]) *
+                  0.25f;
       }
+    }
+
+    // Neumann boundary conditions (pressure gradient = 0 at boundaries)
+    for (int i = 0; i < GRID_HEIGHT; i++) {
+      p[i][0] = p[i][1];
+      p[i][GRID_WIDTH - 1] = p[i][GRID_WIDTH - 2];
+    }
+    for (int j = 0; j < GRID_WIDTH; j++) {
+      p[0][j] = p[1][j];
+      p[GRID_HEIGHT - 1][j] = p[GRID_HEIGHT - 2][j];
     }
   }
 
-  // Apply pressure gradient
+  // Apply pressure gradient with damping
+  float pressure_scale = 0.8f * dt; // Damping factor
   for (int i = 0; i < GRID_HEIGHT; i++) {
     for (int j = 1; j < GRID_WIDTH; j++) {
-      u[i][j] -= (p[i][j] - p[i][j - 1]) / DX;
+      u[i][j] -= pressure_scale * (p[i][j] - p[i][j - 1]) / DX;
     }
   }
   for (int i = 1; i < GRID_HEIGHT; i++) {
     for (int j = 0; j < GRID_WIDTH; j++) {
-      v[i][j] -= (p[i][j] - p[i - 1][j]) / DY;
+      v[i][j] -= pressure_scale * (p[i][j] - p[i - 1][j]) / DY;
     }
   }
 }
